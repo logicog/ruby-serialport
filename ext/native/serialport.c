@@ -511,6 +511,27 @@ static VALUE sp_flush_output_data(self)
    return sp_flush_output_data_impl(self);
 }
 
+/*
+ * Reads a slip message from the port
+ *
+ * @return Array of Bytes Read, always a complete SLIP message
+ * @see SerialPort#set_read_timeout
+ */
+static VALUE sp_read_slip(VALUE self)
+{
+   return sp_read_slip_impl(self);
+}
+
+/*
+ * Writes a slip message to the port
+ *
+ * @return [Integer] the bytes written
+ * @see SerialPort#set_read_timeout
+ */
+static VALUE sp_write_slip(VALUE self, VALUE msg)
+{
+   return sp_write_slip_impl(self, msg);
+}
 
 void Init_serialport()
 {
@@ -575,6 +596,9 @@ void Init_serialport()
 
    rb_define_method(cSerialPort, "flush_input", sp_flush_input_data, 0);
    rb_define_method(cSerialPort, "flush_output", sp_flush_output_data, 0);
+
+   rb_define_method(cSerialPort, "read_slip", sp_read_slip, 0);
+   rb_define_method(cSerialPort, "write_slip", sp_write_slip, 1);
 
    /*
     * 0

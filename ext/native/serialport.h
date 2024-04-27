@@ -93,6 +93,8 @@ VALUE RB_SERIAL_EXPORT sp_set_rts_impl(VALUE self, VALUE val);
 VALUE RB_SERIAL_EXPORT sp_set_dtr_impl(VALUE self, VALUE val);
 VALUE RB_SERIAL_EXPORT sp_get_rts_impl(VALUE self);
 VALUE RB_SERIAL_EXPORT sp_get_dtr_impl(VALUE self);
+VALUE RB_SERIAL_EXPORT sp_read_slip_impl(VALUE self);
+VALUE RB_SERIAL_EXPORT sp_write_slip_impl(VALUE self, VALUE msg);
 
 VALUE RB_SERIAL_EXPORT sp_flush_input_data_impl(VALUE self);
 VALUE RB_SERIAL_EXPORT sp_flush_output_data_impl(VALUE self);

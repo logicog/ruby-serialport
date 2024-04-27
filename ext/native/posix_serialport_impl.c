@@ -60,6 +60,28 @@ static char sTcgetattr[] = "tcgetattr";
 static char sTcsetattr[] = "tcsetattr";
 static char sIoctl[] = "ioctl";
 
+// set tty on fd into raw mode
+int stty_raw (int fd)
+{
+  struct termios tty_state;
+  int i;
+
+  if (tcgetattr(fd, &tty_state) < 0)
+    return (-1);
+
+  tty_state.c_lflag &= ~(ICANON | IEXTEN | ISIG | ECHO);
+  tty_state.c_iflag &= ~(ICRNL | INPCK | ISTRIP | IXON | BRKINT);
+  tty_state.c_oflag &= ~OPOST;
+  tty_state.c_cflag |= CS8;
+
+  tty_state.c_cc[VMIN]  = 1;
+  tty_state.c_cc[VTIME] = 0;
+
+  if (tcsetattr(fd, TCSAFLUSH, &tty_state) < 0)
+    return (-1);
+
+  return (0);
+}
 
 int get_fd_helper(obj)
    VALUE obj;
@@ -110,7 +132,7 @@ VALUE sp_create_impl(class, _port)
    struct termios params;
 
    NEWOBJ(sp, struct RFile);
-   OBJSETUP(sp, class, T_FILE);
+   OBJSETUP((VALUE) sp, class, T_FILE);
    MakeOpenFile((VALUE) sp, fp);
 
    switch(TYPE(_port))
@@ -133,11 +155,9 @@ VALUE sp_create_impl(class, _port)
          break;
    }
 
-   fd = open(port, O_RDWR | O_NOCTTY | O_NDELAY);
+   fd = open(port, O_RDWR | O_NOCTTY | O_NONBLOCK | O_SYNC);
    if (fd == -1)
-   {
       rb_sys_fail(port);
-   }
 
    if (!isatty(fd))
    {
@@ -145,23 +165,7 @@ VALUE sp_create_impl(class, _port)
       rb_raise(rb_eArgError, "not a serial port");
    }
 
-   /* enable blocking read */
-   fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
-
-   if (tcgetattr(fd, &params) == -1)
-   {
-      close(fd);
-      rb_sys_fail(sTcgetattr);
-   }
-
-   params.c_oflag = 0;
-   params.c_lflag = 0;
-   params.c_iflag &= (IXON | IXOFF | IXANY);
-   params.c_cflag |= CLOCAL | CREAD;
-   params.c_cflag &= ~HUPCL;
-
-   if (tcsetattr(fd, TCSANOW, &params) == -1)
-   {
+   if (stty_raw (fd) < 0) {
       close(fd);
       rb_sys_fail(sTcsetattr);
    }
@@ -784,6 +788,129 @@ VALUE self;
 	return Qtrue;
 }
 
+
+#define BUFFER_MAX 10240
+#define RBUF 1024
+#define SLIP_END     0xC0
+#define SLIP_ESC     0xDB
+#define SLIP_ESC_END 0xDC
+#define SLIP_ESC_ESC 0XDD
+
+VALUE sp_read_slip_impl(VALUE self)
+{
+   int read_fd = get_fd_helper(self);
+   static unsigned char buffer[BUFFER_MAX];
+   static int bfill = 0;
+   unsigned char rbuf[RBUF];
+   unsigned char slip_msg[BUFFER_MAX];
+   ssize_t c = 0;
+   int mlen = 0;
+   int flags;
+   VALUE bytes = rb_ary_new();
+   int have_slip = 0;
+
+   if (bfill > 1) {
+      for (mlen = 1; mlen < bfill; mlen++) {
+         if (buffer[mlen] == SLIP_END)
+            break;
+      }
+      mlen += 1; // Message is one longer than the positon of the END_SLIP
+
+      if (buffer[0] == SLIP_END && mlen <= bfill) {
+         have_slip = 1;
+      } else if (buffer[0] != SLIP_END && mlen <= bfill) {
+         memcpy(buffer, buffer + mlen, BUFFER_MAX - mlen);
+         bfill -= mlen;
+      }
+   }
+
+   while (!have_slip) {
+      while (1) {
+         c = read(read_fd, (void *) rbuf, RBUF - 1);
+         if (c == -1 && errno == EAGAIN) {
+            rb_thread_schedule();
+            usleep(100000);
+            continue;
+         }
+         if (c == -1)
+            return Qnil;
+         if (c > 0)
+            break;
+      }
+      memcpy(buffer + bfill, rbuf, c);  // TODO: Check remaining buffer length, first
+      bfill += c;
+      for (mlen = 1; mlen < bfill; mlen++) {
+         if (buffer[mlen] == SLIP_END)
+            break;
+      }
+      mlen += 1; // Message is one longer than the positon of the END_SLIP
+      if (buffer[0] == SLIP_END && mlen <= bfill) {
+         have_slip = 1;
+      } else if (buffer[0] != SLIP_END && mlen <= bfill) {
+         memcpy(buffer, buffer + mlen, BUFFER_MAX - mlen);
+         bfill -= mlen;
+      }
+   };
+
+   memcpy(slip_msg, buffer, mlen);
+   memcpy(buffer, buffer + mlen, bfill - mlen);
+   bfill -= mlen;
+
+   if (mlen > 0) {
+      slip_msg[mlen] = '\0';
+      for (int i = 0; i < mlen; i++)
+         rb_ary_push(bytes, INT2FIX(slip_msg[i]));
+      return bytes;
+   }
+
+   return Qnil;
+}
+
+VALUE sp_write_slip_impl(VALUE self, VALUE msg)
+{
+   int write_fd = get_fd_helper(self);
+   unsigned char *buffer;
+   int bfill = 0;
+   int count = 0, total = 0;
+   int mlen = RARRAY_LEN(msg);
+
+   // Allocate the maximum number of possible bytes
+   buffer = (unsigned char *)malloc(mlen * 2 + 2);
+
+   // Do the actual SLIP encoding, see https://en.wikipedia.org/wiki/Serial_Line_Internet_Protocol
+   buffer[bfill++] = SLIP_END;
+   for (int i = 0; i < mlen; i++) {
+      unsigned char v = FIX2INT(rb_ary_entry(msg, i));
+      switch (v) {
+         case SLIP_END:
+            buffer[bfill++] = SLIP_ESC;
+            buffer[bfill++] = SLIP_ESC_END;
+            break;
+         case SLIP_ESC:
+            buffer[bfill++] = SLIP_ESC;
+            buffer[bfill++] = SLIP_ESC_ESC;
+            break;
+         default:
+            buffer[bfill++] = v;
+      }
+   }
+   buffer[bfill++] = SLIP_END;
+
+   while (bfill > 0) {
+      count = write(write_fd, buffer, bfill);
+      if (count < 0 ) {
+         if (errno == EAGAIN) continue;
+         free(buffer);
+         return INT2FIX(-1);
+      }
+      memcpy(buffer, buffer + count, bfill - count);
+      bfill -= count;
+      total += count;
+   }
+   free(buffer);
+
+   return INT2FIX(mlen);
+}
 
 
 #endif /* !defined(OS_MSWIN) && !defined(OS_BCCWIN) && !defined(OS_MINGW) */
