@@ -10,6 +10,10 @@ The native Windows version of this library supports the Microsoft Visual C++, Bo
 
 There is an alternative gem with MRI, JRuby, and Rubinius support. See below.
 
+This version of the Gem provides support for the SLIP protocol via the read_slip and write_slip
+functions and makes sure that software flow control is disabled by default and O_SYNC is set on the
+serial line so that serial adapters such as the iU880B work reliably and out of the box.
+
 ## Installation
 
 Install the gem as normal: `sudo gem install serialport`
