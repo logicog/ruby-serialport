@@ -20,6 +20,31 @@ VALUE cSerialPort; /* serial port class */
 VALUE sBaud, sDataBits, sStopBits, sParity; /* strings */
 VALUE sRts, sDtr, sCts, sDsr, sDcd, sRi;
 
+VALUE rb_cReadBuffer;
+
+const rb_data_type_t rb_read_buffer_type = {
+    .wrap_struct_name = "ReadBuffer",
+    .function = {
+        .dmark = 0,
+        .dfree = rb_read_buffer_type_free,
+        .dsize = rb_read_buffer_type_size,
+    },
+    .flags = RUBY_TYPED_WB_PROTECTED,
+};
+
+#define BUFFER_MAX 10240
+VALUE rb_read_buffer_type_allocate(VALUE klass)
+{
+    struct rb_read_buffer *buffer = NULL;
+
+    VALUE instance = TypedData_Make_Struct(klass, struct rb_read_buffer, &rb_read_buffer_type, buffer);
+    buffer->base = malloc(BUFFER_MAX);
+    buffer->size = BUFFER_MAX;
+    buffer->bfill = 0;
+
+    return instance;
+}
+
 /*
  * @api private
  *
@@ -29,7 +54,26 @@ VALUE sRts, sDtr, sCts, sDsr, sDcd, sRi;
 static VALUE sp_create(class, _port)
    VALUE class, _port;
 {
-   return sp_create_impl(class, _port);
+   VALUE sp = sp_create_impl(class, _port);
+   rb_ivar_set(sp, rb_intern("buffer"), rb_read_buffer_type_allocate(rb_cReadBuffer));
+
+   return sp;
+}
+
+void rb_read_buffer_type_free(void *_buffer)
+{
+    struct rb_read_buffer *buffer = _buffer;
+
+    free(buffer->base);
+}
+
+size_t rb_read_buffer_type_size(const void *_buffer)
+{
+    const struct rb_read_buffer *buffer = _buffer;
+    size_t total = sizeof(struct rb_read_buffer);
+
+    total += buffer->size;
+    return total;
 }
 
 /*
@@ -558,7 +602,11 @@ void Init_serialport()
    rb_gc_register_address(&sRi);
 
    cSerialPort = rb_define_class("SerialPort", rb_cIO);
+   rb_cReadBuffer = rb_define_class("ReadBuffer", rb_cObject);
+
    rb_define_singleton_method(cSerialPort, "create", sp_create, 1);
+
+   rb_define_alloc_func(rb_cReadBuffer, rb_read_buffer_type_allocate);
 
    rb_define_method(cSerialPort, "get_modem_params", sp_get_modem_params, 0);
    rb_define_method(cSerialPort, "set_modem_params", sp_set_modem_params, -1);

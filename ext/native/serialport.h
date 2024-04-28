@@ -46,6 +46,18 @@ struct line_signals
    int ri;
 };
 
+struct rb_read_buffer {
+    unsigned char *base;
+    size_t size;
+    size_t bfill;
+};
+
+void rb_read_buffer_type_mark(void *_buffer);
+void rb_read_buffer_type_free(void *_buffer);
+size_t rb_read_buffer_type_size(const void *_buffer);
+
+extern const rb_data_type_t rb_read_buffer_type;
+
 #define NONE   0
 #define HARD   1
 #define SOFT   2

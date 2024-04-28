@@ -83,8 +83,7 @@ int stty_raw (int fd)
   return (0);
 }
 
-int get_fd_helper(obj)
-   VALUE obj;
+int get_fd_helper(VALUE obj)
 {
 #ifdef HAVE_RUBY_IO_H
    rb_io_t *fptr;
@@ -789,7 +788,6 @@ VALUE self;
 }
 
 
-#define BUFFER_MAX 10240
 #define RBUF 1024
 #define SLIP_END     0xC0
 #define SLIP_ESC     0xDB
@@ -799,28 +797,30 @@ VALUE self;
 VALUE sp_read_slip_impl(VALUE self)
 {
    int read_fd = get_fd_helper(self);
-   static unsigned char buffer[BUFFER_MAX];
-   static int bfill = 0;
+   unsigned char *buffer;
    unsigned char rbuf[RBUF];
-   unsigned char slip_msg[BUFFER_MAX];
    ssize_t c = 0;
    int mlen = 0;
-   int flags;
    VALUE bytes = rb_ary_new();
    int have_slip = 0;
+   struct rb_read_buffer *read_buffer = NULL;
+   VALUE obj = rb_ivar_get(self, rb_intern("buffer"));
 
-   if (bfill > 1) {
-      for (mlen = 1; mlen < bfill; mlen++) {
+   TypedData_Get_Struct(obj, struct rb_read_buffer, &rb_read_buffer_type, read_buffer);
+   buffer = read_buffer->base;
+
+   if (read_buffer->bfill > 1) {
+      for (mlen = 1; mlen < read_buffer->bfill; mlen++) {
          if (buffer[mlen] == SLIP_END)
             break;
       }
       mlen += 1; // Message is one longer than the positon of the END_SLIP
 
-      if (buffer[0] == SLIP_END && mlen <= bfill) {
+      if (buffer[0] == SLIP_END && mlen <= read_buffer->bfill) {
          have_slip = 1;
-      } else if (buffer[0] != SLIP_END && mlen <= bfill) {
-         memcpy(buffer, buffer + mlen, BUFFER_MAX - mlen);
-         bfill -= mlen;
+      } else if (buffer[0] != SLIP_END && mlen <= read_buffer->bfill) {
+         memcpy(buffer, buffer + mlen, read_buffer->size - mlen);
+         read_buffer->bfill -= mlen;
       }
    }
 
@@ -837,29 +837,28 @@ VALUE sp_read_slip_impl(VALUE self)
          if (c > 0)
             break;
       }
-      memcpy(buffer + bfill, rbuf, c);  // TODO: Check remaining buffer length, first
-      bfill += c;
-      for (mlen = 1; mlen < bfill; mlen++) {
+      memcpy(buffer + read_buffer->bfill, rbuf, c);  // TODO: Check remaining buffer length, first
+      read_buffer->bfill += c;
+      for (mlen = 1; mlen < read_buffer->bfill; mlen++) {
          if (buffer[mlen] == SLIP_END)
             break;
       }
       mlen += 1; // Message is one longer than the positon of the END_SLIP
-      if (buffer[0] == SLIP_END && mlen <= bfill) {
+      if (buffer[0] == SLIP_END && mlen <= read_buffer->bfill) {
          have_slip = 1;
-      } else if (buffer[0] != SLIP_END && mlen <= bfill) {
-         memcpy(buffer, buffer + mlen, BUFFER_MAX - mlen);
-         bfill -= mlen;
+      } else if (buffer[0] != SLIP_END && mlen <= read_buffer->bfill) {
+         memcpy(buffer, buffer + mlen, read_buffer->size - mlen);
+         read_buffer->bfill -= mlen;
       }
    };
 
-   memcpy(slip_msg, buffer, mlen);
-   memcpy(buffer, buffer + mlen, bfill - mlen);
-   bfill -= mlen;
-
    if (mlen > 0) {
-      slip_msg[mlen] = '\0';
       for (int i = 0; i < mlen; i++)
-         rb_ary_push(bytes, INT2FIX(slip_msg[i]));
+         rb_ary_push(bytes, INT2FIX(buffer[i]));
+
+      memcpy(buffer, buffer + mlen, read_buffer->bfill - mlen);
+      read_buffer->bfill -= mlen;
+
       return bytes;
    }
 
